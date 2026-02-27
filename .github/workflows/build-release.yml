@@ -1,0 +1,125 @@
+name: Build and Release pyslang Wheels
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # ── Build the builder image when Dockerfile.builder changes ─────────────────
+  build-builder-image:
+    runs-on: ubuntu-latest
+    outputs:
+      builder-image: ${{ steps.meta.outputs.builder-image }}
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Check if Dockerfile.builder changed
+        id: changed
+        run: |
+          git fetch origin ${{ github.ref }} --depth=2 2>/dev/null || true
+          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep Dockerfile.builder || true)
+          echo "changed=${CHANGED}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: steps.changed.outputs.changed != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push builder image
+        if: steps.changed.outputs.changed != ''
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/slang-builder:latest"
+          echo "builder-image=$IMAGE" >> "$GITHUB_OUTPUT"
+          docker build -f Dockerfile.builder -t "$IMAGE" .
+          docker push "$IMAGE"
+        id: meta
+
+  # ── Build wheels ─────────────────────────────────────────────────────────────
+  build:
+    runs-on: ubuntu-latest
+    needs: build-builder-image
+    container:
+      # Use pre-baked builder image if it exists, otherwise fall back to base
+      image: ghcr.io/${{ github.repository_owner }}/slang-builder:latest
+
+    steps:
+      - name: Install git (for checkout)
+        run: |
+          yum install -y git 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          # Fetch all tags
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --tags 2>/dev/null || true
+
+          # Find the latest vN tag
+          LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+          if [ -z "$LATEST_TAG" ]; then
+            NEW_VERSION="1"
+          else
+            # Extract number and increment
+            CURRENT_NUM="${LATEST_TAG#v}"
+            NEW_VERSION=$((CURRENT_NUM + 1))
+          fi
+
+          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "pyslang_version=1.0.${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo ">>> Next version: v${NEW_VERSION} (pyslang 1.0.${NEW_VERSION})"
+
+      - name: Build wheels
+        run: |
+          chmod +x scripts/build_wheels.sh scripts/test_wheels.sh
+          scripts/build_wheels.sh "${{ steps.version.outputs.pyslang_version }}"
+
+      - name: Test wheels
+        run: |
+          scripts/test_wheels.sh
+
+      - name: Upload wheel artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: pyslang-wheels
+          path: dist/*.whl
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "pyslang ${{ steps.version.outputs.tag }}"
+          body: |
+            ## pyslang ${{ steps.version.outputs.tag }}
+
+            Built from commit ${{ github.sha }}
+
+            ### Included wheels
+            - Python 3.8 (manylinux_2_17_x86_64)
+            - Python 3.9 (manylinux_2_17_x86_64)
+            - Python 3.10 (manylinux_2_17_x86_64)
+            - Python 3.11 (manylinux_2_17_x86_64)
+
+            ### Installation
+            ```bash
+            pip install pyslang --find-links <download-url>
+            ```
+          files: dist/*.whl
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
