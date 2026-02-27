@@ -7,11 +7,12 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/yuunqiliu/centos7-gcc14:latest
 
     steps:
       - name: Checkout repository
@@ -20,31 +21,10 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Refresh builder image if Dockerfile.builder changed
-        run: |
-          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep Dockerfile.builder || true)
-          if [ -n "$CHANGED" ]; then
-            echo "Dockerfile.builder changed — rebuilding builder image..."
-            docker build -f Dockerfile.builder \
-              -t ghcr.io/${{ github.repository_owner }}/slang-builder:latest .
-            docker push ghcr.io/${{ github.repository_owner }}/slang-builder:latest
-          else
-            echo "Dockerfile.builder unchanged — pulling existing builder image..."
-            docker pull ghcr.io/${{ github.repository_owner }}/slang-builder:latest \
-              || docker pull ghcr.io/yuunqiliu/centos7-gcc14:latest
-          fi
-
       - name: Determine version
         id: version
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch --tags 2>/dev/null || true
           LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
           if [ -z "$LATEST_TAG" ]; then
@@ -52,35 +32,19 @@ jobs:
           else
             NEW_VERSION=$(( ${LATEST_TAG#v} + 1 ))
           fi
-          echo "tag=v${NEW_VERSION}"                       >> "$GITHUB_OUTPUT"
-          echo "pyslang_version=1.0.${NEW_VERSION}"        >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEW_VERSION}"                >> "$GITHUB_OUTPUT"
+          echo "pyslang_version=1.0.${NEW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Next release: v${NEW_VERSION} (pyslang 1.0.${NEW_VERSION})"
 
-      - name: Build wheels inside Docker
+      - name: Build wheels
         run: |
-          # Try builder image first, fall back to base image
-          IMAGE="ghcr.io/${{ github.repository_owner }}/slang-builder:latest"
-          docker image inspect "$IMAGE" &>/dev/null \
-            || IMAGE="ghcr.io/yuunqiliu/centos7-gcc14:latest"
+          chmod +x scripts/build_wheels.sh
+          scripts/build_wheels.sh "${{ steps.version.outputs.pyslang_version }}"
 
-          chmod +x scripts/build_wheels.sh scripts/test_wheels.sh
-          docker run --rm \
-            -v "$PWD":/workspace \
-            -w /workspace \
-            "$IMAGE" \
-            bash scripts/build_wheels.sh "${{ steps.version.outputs.pyslang_version }}"
-
-      - name: Test wheels inside Docker
+      - name: Test wheels
         run: |
-          IMAGE="ghcr.io/${{ github.repository_owner }}/slang-builder:latest"
-          docker image inspect "$IMAGE" &>/dev/null \
-            || IMAGE="ghcr.io/yuunqiliu/centos7-gcc14:latest"
-
-          docker run --rm \
-            -v "$PWD":/workspace \
-            -w /workspace \
-            "$IMAGE" \
-            bash scripts/test_wheels.sh
+          chmod +x scripts/test_wheels.sh
+          scripts/test_wheels.sh
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v4
