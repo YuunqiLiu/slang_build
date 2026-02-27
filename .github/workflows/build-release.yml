@@ -10,87 +10,76 @@ permissions:
   packages: write
 
 jobs:
-  # ── Build the builder image when Dockerfile.builder changes ─────────────────
-  build-builder-image:
-    runs-on: ubuntu-latest
-    outputs:
-      builder-image: ${{ steps.meta.outputs.builder-image }}
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Check if Dockerfile.builder changed
-        id: changed
-        run: |
-          git fetch origin ${{ github.ref }} --depth=2 2>/dev/null || true
-          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep Dockerfile.builder || true)
-          echo "changed=${CHANGED}" >> "$GITHUB_OUTPUT"
-
-      - name: Log in to GHCR
-        if: steps.changed.outputs.changed != ''
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push builder image
-        if: steps.changed.outputs.changed != ''
-        run: |
-          IMAGE="ghcr.io/${{ github.repository_owner }}/slang-builder:latest"
-          echo "builder-image=$IMAGE" >> "$GITHUB_OUTPUT"
-          docker build -f Dockerfile.builder -t "$IMAGE" .
-          docker push "$IMAGE"
-        id: meta
-
-  # ── Build wheels ─────────────────────────────────────────────────────────────
   build:
     runs-on: ubuntu-latest
-    needs: build-builder-image
-    container:
-      # Use pre-baked builder image if it exists, otherwise fall back to base
-      image: ghcr.io/${{ github.repository_owner }}/slang-builder:latest
 
     steps:
-      - name: Install git (for checkout)
-        run: |
-          yum install -y git 2>/dev/null || true
-
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refresh builder image if Dockerfile.builder changed
+        run: |
+          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep Dockerfile.builder || true)
+          if [ -n "$CHANGED" ]; then
+            echo "Dockerfile.builder changed — rebuilding builder image..."
+            docker build -f Dockerfile.builder \
+              -t ghcr.io/${{ github.repository_owner }}/slang-builder:latest .
+            docker push ghcr.io/${{ github.repository_owner }}/slang-builder:latest
+          else
+            echo "Dockerfile.builder unchanged — pulling existing builder image..."
+            docker pull ghcr.io/${{ github.repository_owner }}/slang-builder:latest \
+              || docker pull ghcr.io/yuunqiliu/centos7-gcc14:latest
+          fi
+
       - name: Determine version
         id: version
         run: |
-          # Fetch all tags
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch --tags 2>/dev/null || true
-
-          # Find the latest vN tag
           LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
           if [ -z "$LATEST_TAG" ]; then
             NEW_VERSION="1"
           else
-            # Extract number and increment
-            CURRENT_NUM="${LATEST_TAG#v}"
-            NEW_VERSION=$((CURRENT_NUM + 1))
+            NEW_VERSION=$(( ${LATEST_TAG#v} + 1 ))
           fi
+          echo "tag=v${NEW_VERSION}"                       >> "$GITHUB_OUTPUT"
+          echo "pyslang_version=1.0.${NEW_VERSION}"        >> "$GITHUB_OUTPUT"
+          echo "Next release: v${NEW_VERSION} (pyslang 1.0.${NEW_VERSION})"
 
-          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${NEW_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "pyslang_version=1.0.${NEW_VERSION}" >> "$GITHUB_OUTPUT"
-          echo ">>> Next version: v${NEW_VERSION} (pyslang 1.0.${NEW_VERSION})"
-
-      - name: Build wheels
+      - name: Build wheels inside Docker
         run: |
+          # Try builder image first, fall back to base image
+          IMAGE="ghcr.io/${{ github.repository_owner }}/slang-builder:latest"
+          docker image inspect "$IMAGE" &>/dev/null \
+            || IMAGE="ghcr.io/yuunqiliu/centos7-gcc14:latest"
+
           chmod +x scripts/build_wheels.sh scripts/test_wheels.sh
-          scripts/build_wheels.sh "${{ steps.version.outputs.pyslang_version }}"
+          docker run --rm \
+            -v "$PWD":/workspace \
+            -w /workspace \
+            "$IMAGE" \
+            bash scripts/build_wheels.sh "${{ steps.version.outputs.pyslang_version }}"
 
-      - name: Test wheels
+      - name: Test wheels inside Docker
         run: |
-          scripts/test_wheels.sh
+          IMAGE="ghcr.io/${{ github.repository_owner }}/slang-builder:latest"
+          docker image inspect "$IMAGE" &>/dev/null \
+            || IMAGE="ghcr.io/yuunqiliu/centos7-gcc14:latest"
+
+          docker run --rm \
+            -v "$PWD":/workspace \
+            -w /workspace \
+            "$IMAGE" \
+            bash scripts/test_wheels.sh
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v3
