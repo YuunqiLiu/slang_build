@@ -33,21 +33,18 @@ jobs:
           echo "pyslang_version=1.0.${NEW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Next release: v${NEW_VERSION} (pyslang 1.0.${NEW_VERSION})"
 
-      - name: Build wheels (inside CentOS 7 container)
+      - name: Build and test wheels (inside CentOS 7 container)
         run: |
           docker run --rm \
             -v "$PWD":/workspace \
             -w /workspace \
             ghcr.io/yuunqiliu/centos7-gcc14:latest \
-            bash scripts/build_wheels.sh "${{ steps.version.outputs.pyslang_version }}"
-
-      - name: Test wheels (inside CentOS 7 container)
-        run: |
-          docker run --rm \
-            -v "$PWD":/workspace \
-            -w /workspace \
-            ghcr.io/yuunqiliu/centos7-gcc14:latest \
-            bash scripts/test_wheels.sh
+            bash -c "
+              set -e
+              chmod +x scripts/build_wheels.sh scripts/test_wheels.sh
+              scripts/build_wheels.sh '${{ steps.version.outputs.pyslang_version }}'
+              scripts/test_wheels.sh
+            "
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v4

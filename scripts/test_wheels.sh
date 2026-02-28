@@ -1,6 +1,6 @@
 #!/bin/bash
-# Test pyslang wheels by installing and running basic import + test for each Python version.
-# This script is designed to run INSIDE the Docker container.
+# Test pyslang wheels. Runs AFTER build_wheels.sh in the same container session,
+# so /opt/pyenvs/pyXY conda envs are available.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -15,16 +15,14 @@ echo "========================================"
 FAILED=0
 
 for PYVER in "${PYTHON_VERSIONS[@]}"; do
-    ENV_NAME="py${PYVER//./}"
-    ENV_DIR="/opt/pyenvs/$ENV_NAME"
-    PYTHON="$ENV_DIR/bin/python"
-    PIP="$ENV_DIR/bin/pip"
+    CPTAG="cp${PYVER//./}"
+    ENV_DIR="/opt/pyenvs/py${PYVER//./}"
 
     echo ""
     echo "--- Testing Python $PYVER ---"
 
     # Find matching wheel
-    WHEEL_FILE=$(ls "$DIST_DIR"/pyslang-*-cp${PYVER//./}-*.whl 2>/dev/null | head -1)
+    WHEEL_FILE=$(ls "$DIST_DIR"/pyslang-*-${CPTAG}-*.whl 2>/dev/null | head -1)
     if [ -z "$WHEEL_FILE" ]; then
         echo "ERROR: No wheel found for Python $PYVER"
         FAILED=1
@@ -32,32 +30,53 @@ for PYVER in "${PYTHON_VERSIONS[@]}"; do
     fi
     echo "Wheel: $(basename "$WHEEL_FILE")"
 
-    # Install wheel
-    $PIP install --force-reinstall "$WHEEL_FILE" 2>&1 | tail -3
-    $PIP install pytest 2>&1 | tail -1
+    # Resolve Python binary: prefer conda env, fall back to system python
+    if [ -x "$ENV_DIR/bin/python" ]; then
+        PYBIN="$ENV_DIR/bin/python"
+    elif command -v "python$PYVER" &>/dev/null; then
+        PYBIN=$(command -v "python$PYVER")
+    else
+        echo "SKIP: no Python $PYVER found"
+        continue
+    fi
+
+    # Create a fresh venv so install is isolated
+    VENV="/tmp/test_venv_${CPTAG}"
+    rm -rf "$VENV"
+    "$PYBIN" -m venv "$VENV"
+    "$VENV/bin/pip" install -q --force-reinstall "$WHEEL_FILE" || {
+        echo "FAIL: pip install for Python $PYVER"; FAILED=1; continue
+    }
+    "$VENV/bin/pip" install -q pytest
 
     # Basic import test
     echo ">>> Import test..."
-    $PYTHON -c "
+    "$VENV/bin/python" -c "
 import pyslang
-print(f'  pyslang imported successfully')
 print(f'  SVInt(-3) = {pyslang.SVInt(-3)}')
 t = pyslang.SyntaxTree.fromText('module m; endmodule')
-print(f'  SyntaxTree created, root kind: {t.root.kind}')
-print(f'  PASS: Basic import test')
-" || { echo "FAIL: Import test for Python $PYVER"; FAILED=1; continue; }
+print(f'  SyntaxTree root kind: {t.root.kind}')
+print(f'  PASS: basic import')
+" || { echo "FAIL: import test for Python $PYVER"; FAILED=1; continue; }
 
-    # Run actual tests
+    # Run pytest suite (use if/else so pipefail doesn't abort the script on failure)
     echo ">>> Running pytest..."
-    cd "$SRC_DIR"
-    $PYTHON -m pytest pyslang/tests/ -x -q 2>&1 | tail -10
-    TEST_EXIT=${PIPESTATUS[0]}
-    if [ "$TEST_EXIT" -ne 0 ]; then
+    if "$VENV/bin/python" -m pytest "$SRC_DIR/pyslang/tests/" -x -q 2>&1 | tail -10; then
+        echo "PASS: Python $PYVER"
+    else
         echo "FAIL: pytest for Python $PYVER"
         FAILED=1
-    else
-        echo "PASS: All tests for Python $PYVER"
     fi
+done
+
+echo ""
+echo "========================================"
+if [ "$FAILED" -ne 0 ]; then
+    echo " SOME TESTS FAILED!"
+    exit 1
+else
+    echo " ALL TESTS PASSED!"
+fi
 done
 
 echo ""
