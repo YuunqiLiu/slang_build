@@ -11,8 +11,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/yuunqiliu/centos7-gcc14:latest
 
     steps:
       - name: Checkout repository
@@ -24,7 +22,6 @@ jobs:
       - name: Determine version
         id: version
         run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch --tags 2>/dev/null || true
           LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
           if [ -z "$LATEST_TAG" ]; then
@@ -36,15 +33,21 @@ jobs:
           echo "pyslang_version=1.0.${NEW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Next release: v${NEW_VERSION} (pyslang 1.0.${NEW_VERSION})"
 
-      - name: Build wheels
+      - name: Build wheels (inside CentOS 7 container)
         run: |
-          chmod +x scripts/build_wheels.sh
-          scripts/build_wheels.sh "${{ steps.version.outputs.pyslang_version }}"
+          docker run --rm \
+            -v "$PWD":/workspace \
+            -w /workspace \
+            ghcr.io/yuunqiliu/centos7-gcc14:latest \
+            bash scripts/build_wheels.sh "${{ steps.version.outputs.pyslang_version }}"
 
-      - name: Test wheels
+      - name: Test wheels (inside CentOS 7 container)
         run: |
-          chmod +x scripts/test_wheels.sh
-          scripts/test_wheels.sh
+          docker run --rm \
+            -v "$PWD":/workspace \
+            -w /workspace \
+            ghcr.io/yuunqiliu/centos7-gcc14:latest \
+            bash scripts/test_wheels.sh
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v4
