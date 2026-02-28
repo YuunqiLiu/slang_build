@@ -60,10 +60,20 @@ print(f'  PASS: basic import')
 " || { echo "FAIL: import test for Python $PYVER"; FAILED=1; continue; }
 
     # Run pytest suite (use if/else so pipefail doesn't abort the script on failure)
-    # Python 3.8: skip test_cst_json.py (uses functools.cache added in 3.9)
+    # Python 3.8: upstream tests use 3.9+ syntax (functools.cache, list[str], etc.)
+    # Collect incompatible files and ignore them
     PYTEST_EXTRA_ARGS=""
     if [ "$PYVER" = "3.8" ]; then
-        PYTEST_EXTRA_ARGS="--ignore=$SRC_DIR/pyslang/tests/test_cst_json.py"
+        IGNORE_FILES=""
+        for tf in "$SRC_DIR"/pyslang/tests/test_*.py; do
+            if "$VENV/bin/python" -c "import ast; ast.parse(open('$tf').read())" 2>/dev/null; then
+                : # file parses OK
+            else
+                echo "  (skipping $(basename "$tf") — syntax incompatible with Python $PYVER)"
+                IGNORE_FILES="$IGNORE_FILES --ignore=$tf"
+            fi
+        done
+        PYTEST_EXTRA_ARGS="$IGNORE_FILES"
     fi
     echo ">>> Running pytest..."
     if "$VENV/bin/python" -m pytest "$SRC_DIR/pyslang/tests/" -x -q $PYTEST_EXTRA_ARGS 2>&1 | tail -10; then
