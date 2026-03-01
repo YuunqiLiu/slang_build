@@ -59,22 +59,24 @@ print(f'  SyntaxTree root kind: {t.root.kind}')
 print(f'  PASS: basic import')
 " || { echo "FAIL: import test for Python $PYVER"; FAILED=1; continue; }
 
-    # Run pytest suite (use if/else so pipefail doesn't abort the script on failure)
-    # Python 3.8: upstream tests use 3.9+ syntax (functools.cache, list[str], etc.)
-    # Collect incompatible files and ignore them
+    # Run pytest suite
+    # For Python 3.8: use --collect-only first to find files that fail collection,
+    # then ignore those files. This catches both syntax errors AND runtime import
+    # errors (e.g. functools.cache, list[str] subscript).
     PYTEST_EXTRA_ARGS=""
     if [ "$PYVER" = "3.8" ]; then
         IGNORE_FILES=""
-        for tf in "$SRC_DIR"/pyslang/tests/test_*.py; do
-            if "$VENV/bin/python" -c "import ast; ast.parse(open('$tf').read())" 2>/dev/null; then
-                : # file parses OK
-            else
-                echo "  (skipping $(basename "$tf") — syntax incompatible with Python $PYVER)"
-                IGNORE_FILES="$IGNORE_FILES --ignore=$tf"
+        COLLECT_OUTPUT=$("$VENV/bin/python" -m pytest "$SRC_DIR/pyslang/tests/" --collect-only -q 2>&1 || true)
+        # Extract files that caused collection errors
+        while IFS= read -r errfile; do
+            if [ -n "$errfile" ]; then
+                echo "  (skipping $(basename "$errfile") — incompatible with Python $PYVER)"
+                IGNORE_FILES="$IGNORE_FILES --ignore=$errfile"
             fi
-        done
+        done < <(echo "$COLLECT_OUTPUT" | grep -oP '(?<=ERROR )\S+\.py' | sort -u)
         PYTEST_EXTRA_ARGS="$IGNORE_FILES"
     fi
+
     echo ">>> Running pytest..."
     if "$VENV/bin/python" -m pytest "$SRC_DIR/pyslang/tests/" -x -q $PYTEST_EXTRA_ARGS 2>&1 | tail -10; then
         echo "PASS: Python $PYVER"
@@ -82,16 +84,6 @@ print(f'  PASS: basic import')
         echo "FAIL: pytest for Python $PYVER"
         FAILED=1
     fi
-done
-
-echo ""
-echo "========================================"
-if [ "$FAILED" -ne 0 ]; then
-    echo " SOME TESTS FAILED!"
-    exit 1
-else
-    echo " ALL TESTS PASSED!"
-fi
 done
 
 echo ""
