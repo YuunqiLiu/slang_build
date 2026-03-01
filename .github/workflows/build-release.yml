@@ -38,7 +38,7 @@ jobs:
           docker run --rm \
             -v "$PWD":/workspace \
             -w /workspace \
-            ghcr.io/yuunqiliu/centos7-gcc14:latest \
+            ghcr.io/yuunqiliu/centos7-gcc14-multi_py:latest \
             bash -c "
               set -e
               chmod +x scripts/build_wheels.sh scripts/test_wheels.sh

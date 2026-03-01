@@ -12,16 +12,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 VERSION="${1:-}"
 
-BUILDER_IMAGE="ghcr.io/yuunqiliu/slang-builder:latest"
+BUILDER_IMAGE="ghcr.io/yuunqiliu/centos7-gcc14-multi_py:latest"
 BASE_IMAGE="ghcr.io/yuunqiliu/centos7-gcc14:latest"
 
-echo ">>> Checking for pre-baked builder image..."
+echo ">>> Checking for pre-baked builder image (centos7-gcc14-multi_py)..."
 if docker pull "$BUILDER_IMAGE" 2>/dev/null; then
     DOCKER_IMAGE="$BUILDER_IMAGE"
-    echo ">>> Using builder image (faster — envs pre-installed): $DOCKER_IMAGE"
+    echo ">>> Using multi_py builder image (faster — conda envs pre-installed): $DOCKER_IMAGE"
 else
     DOCKER_IMAGE="$BASE_IMAGE"
-    echo ">>> Builder image not found; using base image (will install envs): $DOCKER_IMAGE"
+    echo ">>> multi_py image not found; using base image (will install conda envs): $DOCKER_IMAGE"
     docker pull "$DOCKER_IMAGE"
 fi
 

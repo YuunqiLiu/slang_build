@@ -35,7 +35,7 @@ echo " Version: ${PYSLANG_VERSION:-<unchanged>}"
 echo "========================================"
 
 # ── patchelf (needed by auditwheel) ──────────────────────────────────────────
-# Pre-installed in builder image; install on-the-fly as fallback.
+# Pre-installed in centos7-gcc14-multi_py image; fallback for other envs.
 if ! command -v patchelf &>/dev/null; then
     echo ">>> [$(date +%H:%M:%S)] Installing patchelf (timeout ${TIMEOUT_DOWNLOAD}s)..."
     timeout $TIMEOUT_DOWNLOAD curl -fSL \
@@ -54,7 +54,8 @@ if [ -n "${https_proxy:-}" ]; then
 fi
 
 # ── Create conda envs + install build deps ───────────────────────────────────
-# In the builder image these already exist; this loop is a no-op in that case.
+# In centos7-gcc14-multi_py image these envs already exist; loop is a no-op.
+# Fallback: creates envs on-the-fly when using base image instead.
 for PYVER in "${PYTHON_VERSIONS[@]}"; do
     ENV_DIR="/opt/pyenvs/py${PYVER//./}"
     PIP="$ENV_DIR/bin/pip"
